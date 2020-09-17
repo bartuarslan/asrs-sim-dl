@@ -97,7 +97,7 @@ def source(env, interval):
     while True:
         t_ID += 1
         t_type = bool(random.getrandbits(1))
-        t_tier = random.randint(3, tiers)
+        t_tier = random.randint(1, tiers)
         t_bay = random.randint(1, bays)
         t_time = env.now
         side = random.randint(1, 2)
@@ -148,6 +148,8 @@ def shuttle_action1(env, shuttle, shuttleID=1):
                 if tier != 1:
                     lift1_move = lift1_action(env, name, type, shuttleID, lift1, tier, bay, arrive)
                     env.process(lift1_move)
+                elif tier == 1:
+                    lift1_buffer_control[0] = name
                 if shuttle_locations[shuttleID]["tier"] != tier:
                     temp_tier = shuttle_locations[shuttleID]["tier"]
                     s_travel1 = abs(shuttle_locations[req1]["bay"] - bays) * lengthofbay
@@ -156,7 +158,8 @@ def shuttle_action1(env, shuttle, shuttleID=1):
                     t_l2t = calctime(a_lift, v_lift, l2_travel1)
                     l2_travel2 = abs(tier - temp_tier) * heightoftier
                     t_l2t2 = calctime(a_lift, v_lift, l2_travel2)
-                    req_lift2 = yield lift2.request()
+                    req_lift2 = lift2.request()
+                    yield req_lift2
                     to1 = env.timeout(t_st1)
                     to2 = env.timeout(t_l2t)
                     print('%7.4f %s: Shuttle:%s moving to Lift 2 buffer' % (env.now, name, req1))
@@ -271,12 +274,10 @@ def shuttle_action2(env, shuttle, shuttleID=2):
                     break
             # Process start
             if name != "":
-                if shuttle_locations[shuttleID]["tier"] != tier:
-                    tier_avail[tier] = shuttleID
-                    # todo move lift 2
 
                 req1 = yield shuttle.get(lambda shuttleno: shuttleno == shuttleID)
                 shuttle_avail[req1 - 1] = name
+                tier_avail[tier - 1] = shuttleID
                 pickup_time = env.now
                 wait = pickup_time - arrive
                 print('%7.4f %s: Waited %6.3f, Chosen Shuttle: %s' % (env.now, name, wait, req1))
@@ -284,6 +285,33 @@ def shuttle_action2(env, shuttle, shuttleID=2):
                 if tier != 1:
                     lift1_move = lift1_action(env, name, type, shuttleID, lift1, tier, bay, arrive)
                     env.process(lift1_move)
+                elif tier == 1:
+                    lift1_buffer_control[0] = name
+                if shuttle_locations[shuttleID]["tier"] != tier:
+                    temp_tier = shuttle_locations[shuttleID]["tier"]
+                    s_travel1 = abs(shuttle_locations[req1]["bay"] - bays) * lengthofbay
+                    t_st1 = calctime(a_shuttle, v_shuttle, s_travel1)
+                    l2_travel1 = abs(lift2_location[0] - temp_tier) * heightoftier
+                    t_l2t = calctime(a_lift, v_lift, l2_travel1)
+                    l2_travel2 = abs(tier - temp_tier) * heightoftier
+                    t_l2t2 = calctime(a_lift, v_lift, l2_travel2)
+                    req_lift2 = lift2.request()
+                    yield req_lift2
+                    to1 = env.timeout(t_st1)
+                    to2 = env.timeout(t_l2t)
+                    print('%7.4f %s: Shuttle:%s moving to Lift 2 buffer' % (env.now, name, req1))
+                    print('%7.4f %s: Lift 2 moving to %s tier to pick up Shuttle %s' % (
+                    env.now, name, temp_tier, shuttleID))
+                    yield to1 & to2
+                    print('%7.4f %s: Shuttle:%s moved to Lift 2 buffer' % (env.now, name, req1))
+                    to3 = env.timeout(t_l2t2)
+                    tier_avail[temp_tier - 1] = 0
+                    print('%7.4f %s: Lift 2 moving to tier %s' % (env.now, name, tier))
+                    yield to3
+                    print('%7.4f %s: Lift 2 moved to tier %s' % (env.now, name, tier))
+                    shuttle_locations[shuttleID]["tier"] = tier
+                    shuttle_locations[shuttleID]["bay"] = bays
+                    lift2.release(req_lift2)
                 if type == 0:
 
                     shuttle_travel1 = abs(shuttle_locations[shuttleID]["bay"] - 0) * lengthofbay
