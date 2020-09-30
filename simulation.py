@@ -1,11 +1,10 @@
 import random
 import simpy
 from math import sqrt
-from collections import namedtuple
 from statistics import mean
 
-run_time = 1000
-transaction_interval = 5  # every 5 seconds create transaction
+run_time = 10000
+transaction_interval = 7.6  # every 7.6 seconds create transaction
 tiers = 5
 bays = 25
 lengthofbay = 0.5
@@ -63,9 +62,11 @@ bay_util = {
 
 shuttle_util = [0] * shuttle_no
 lift1_util = [0] * 2
+lift2_util = [0]
 shuttle_avail = [0] * shuttle_no
 lift1_avail = [0] * 2
 active_transactions = []
+tier_buffer = []
 flowtime = []
 cycletime = []
 tier_avail = [0] * tiers
@@ -80,7 +81,7 @@ for shuttle in shuttleNo:
 def calctime(A, maxV, d):
     """
     A       constant acceleration, m/s/s
-    maxV    maximumum velocity, m/s
+    maxV    maximum velocity, m/s
     return time in seconds required to travel
     d       distance, m
     """
@@ -113,8 +114,8 @@ def source(env, interval):
         if proc_check[0] == 0:
             env.process(shuttle_action1(env, shuttle))
 
-        #if proc_check[1] == 0:
-        #    env.process(shuttle_action2(env, shuttle))
+        if proc_check[1] == 0:
+            env.process(shuttle_action2(env, shuttle, 2))
 
         t = random.expovariate(1.0 / interval)
         yield env.timeout(t)
@@ -122,7 +123,7 @@ def source(env, interval):
 
 def shuttle_action1(env, shuttle, shuttleID=1):
     while True:
-        proc_check[0] = 1
+        proc_check[0] = proc_check[0] + 1
         if len(active_transactions) > 0 and shuttle_avail[shuttleID - 1] == 0:
             name = ""
             for transaction in range(len(active_transactions)):
@@ -137,22 +138,25 @@ def shuttle_action1(env, shuttle, shuttleID=1):
                     break
             # Process start
             if name != "":
+                yield shuttle.get(lambda shuttleno: shuttleno == shuttleID)
+                buffer_control = [tier, name]
 
-                req1 = yield shuttle.get(lambda shuttleno: shuttleno == shuttleID)
-                shuttle_avail[req1 - 1] = name
+                shuttle_avail[shuttleID - 1] = name
                 tier_avail[tier - 1] = shuttleID
                 pickup_time = env.now
                 wait = pickup_time - arrive
-                print('%7.4f %s: Waited %6.3f, Chosen Shuttle: %s' % (env.now, name, wait, req1))
+                print('%7.4f %s: Waited %6.3f, Chosen Shuttle: %s' % (env.now, name, wait, shuttleID))
 
                 if tier != 1:
                     lift1_move = lift1_action(env, name, type, shuttleID, lift1, tier, bay, arrive)
                     env.process(lift1_move)
+                    lift1_use = 1
                 elif tier == 1:
                     lift1_buffer_control[0] = name
+                    lift1_use = 0
                 if shuttle_locations[shuttleID]["tier"] != tier:
                     temp_tier = shuttle_locations[shuttleID]["tier"]
-                    s_travel1 = abs(shuttle_locations[req1]["bay"] - bays) * lengthofbay
+                    s_travel1 = abs(shuttle_locations[shuttleID]["bay"] - bays) * lengthofbay
                     t_st1 = calctime(a_shuttle, v_shuttle, s_travel1)
                     l2_travel1 = abs(lift2_location[0] - temp_tier) * heightoftier
                     t_l2t = calctime(a_lift, v_lift, l2_travel1)
@@ -160,13 +164,14 @@ def shuttle_action1(env, shuttle, shuttleID=1):
                     t_l2t2 = calctime(a_lift, v_lift, l2_travel2)
                     req_lift2 = lift2.request()
                     yield req_lift2
+                    lift2_time1 = env.now
                     to1 = env.timeout(t_st1)
                     to2 = env.timeout(t_l2t)
-                    print('%7.4f %s: Shuttle:%s moving to Lift 2 buffer' % (env.now, name, req1))
+                    print('%7.4f %s: Shuttle:%s moving to Lift 2 buffer' % (env.now, name, shuttleID))
                     print('%7.4f %s: Lift 2 moving to %s tier to pick up Shuttle %s' % (
                     env.now, name, temp_tier, shuttleID))
                     yield to1 & to2
-                    print('%7.4f %s: Shuttle:%s moved to Lift 2 buffer' % (env.now, name, req1))
+                    print('%7.4f %s: Shuttle:%s moved to Lift 2 buffer' % (env.now, name, shuttleID))
                     to3 = env.timeout(t_l2t2)
                     tier_avail[temp_tier - 1] = 0
                     print('%7.4f %s: Lift 2 moving to tier %s' % (env.now, name, tier))
@@ -174,81 +179,99 @@ def shuttle_action1(env, shuttle, shuttleID=1):
                     print('%7.4f %s: Lift 2 moved to tier %s' % (env.now, name, tier))
                     shuttle_locations[shuttleID]["tier"] = tier
                     shuttle_locations[shuttleID]["bay"] = bays
+                    lift2_util[0] = lift2_util[0] + (env.now - lift2_time1)
                     lift2.release(req_lift2)
                 if type == 0:
 
-                    shuttle_travel1 = abs(shuttle_locations[req1]["bay"] - 0) * lengthofbay
+                    shuttle_travel1 = abs(shuttle_locations[shuttleID]["bay"] - 0) * lengthofbay
                     time_shuttle_travel1 = calctime(a_shuttle, v_shuttle, shuttle_travel1)
                     shuttle_travel2 = bay * lengthofbay
                     time_shuttle_travel2 = calctime(a_shuttle, v_shuttle, shuttle_travel2)
                     t1 = env.timeout(time_shuttle_travel1)
-                    print('%7.4f %s: Shuttle:%s moving to buffer' % (env.now, name, req1))
+                    print('%7.4f %s: Shuttle:%s moving to buffer' % (env.now, name, shuttleID))
                     yield t1
-                    print('%7.4f %s: Shuttle:%s moved to buffer' % (env.now, name, req1))
+                    print('%7.4f %s: Shuttle:%s moved to buffer' % (env.now, name, shuttleID))
                     shuttle_buffer_control[tier - 1] = name
                     if lift1_buffer_control[tier - 1] == name:
                         t2 = env.timeout(time_shuttle_travel2)
-                        print('%7.4f %s: Shuttle:%s moving to bay %s' % (env.now, name, req1, bay))
+                        print('%7.4f %s: Shuttle:%s moving to bay %s' % (env.now, name, shuttleID, bay))
                         yield t2
-                        print('%7.4f %s: Shuttle:%s moved to bay %s' % (env.now, name, req1, bay))
+                        print('%7.4f %s: Shuttle:%s moved to bay %s' % (env.now, name, shuttleID, bay))
 
-                        shuttle_avail[req1 - 1] = 0
-                        shuttle.put(req1)
+                        shuttle_avail[shuttleID - 1] = 0
+                        shuttle.put(shuttleID)
                         shuttle_time = env.now - pickup_time
-                        shuttle_util[req1 - 1] = shuttle_util[req1 - 1] + shuttle_time
+                        shuttle_util[shuttleID - 1] = shuttle_util[shuttleID - 1] + shuttle_time
                         shuttle_locations[shuttleID]["bay"] = bay
                         flow_time = env.now - pickup_time
                         cycle_time = env.now - arrive
                         flowtime.append(flow_time)
                         cycletime.append(cycle_time)
+                        print('%7.4f %s: Finished Shuttle:%s, Cycle time: %7.4f' % (env.now, name, shuttleID, cycle_time))
+                        proc_check[0] = 0
                         env.process(shuttle_action1(env, shuttle, shuttleID))
-                        print('%7.4f %s: Finished Shuttle:%s, Cycle time: %7.4f' % (env.now, name, req1, cycle_time))
+                        break
+                    else:
+                        tier_buffer.append(buffer_control)
+                        proc_check[0] = 0
+                        break
                 else:
-                    shuttle_travel1 = abs(shuttle_locations[req1]["bay"] - bay) * lengthofbay
+                    shuttle_travel1 = abs(shuttle_locations[shuttleID]["bay"] - bay) * lengthofbay
                     time_shuttle_travel1 = calctime(a_shuttle, v_shuttle, shuttle_travel1)
                     shuttle_travel2 = bay * lengthofbay
                     time_shuttle_travel2 = calctime(a_shuttle, v_shuttle, shuttle_travel2)
                     ts1 = env.timeout(time_shuttle_travel1)
 
-                    print('%7.4f %s: Shuttle:%s moving to bay %s' % (env.now, name, req1, bay))
+                    print('%7.4f %s: Shuttle:%s moving to bay %s' % (env.now, name, shuttleID, bay))
                     yield ts1
-                    print('%7.4f %s: Shuttle:%s moved to bay %s' % (env.now, name, req1, bay))
+                    print('%7.4f %s: Shuttle:%s moved to bay %s' % (env.now, name, shuttleID, bay))
 
                     ts2 = env.timeout(time_shuttle_travel2)
-                    print('%7.4f %s: Shuttle:%s moving to buffer' % (env.now, name, req1))
+                    print('%7.4f %s: Shuttle:%s moving to buffer' % (env.now, name, shuttleID))
                     yield ts2
-                    print('%7.4f %s: Shuttle:%s moved to buffer' % (env.now, name, req1))
+                    print('%7.4f %s: Shuttle:%s moved to buffer' % (env.now, name, shuttleID))
 
                     shuttle_buffer_control[tier - 1] = name
-                    shuttle_avail[req1 - 1] = 0
-                    shuttle.put(req1)
+                    shuttle_avail[shuttleID - 1] = 0
+                    shuttle.put(shuttleID)
                     shuttle_time = env.now - pickup_time
-                    shuttle_util[req1 - 1] = shuttle_util[req1 - 1] + shuttle_time
+                    shuttle_util[shuttleID - 1] = shuttle_util[shuttleID - 1] + shuttle_time
                     shuttle_locations[shuttleID]["bay"] = 0
-                    if lift1_buffer_control[tier - 1] == name:
-                        for no_lift1 in range(2):
-                            if lift1_avail[no_lift1] == name:
-                                lift1_travel1 = abs(1 - tier) * heightoftier
-                                time_lift1_travel1 = calctime(a_lift, v_lift, lift1_travel1)
-                                tl1 = env.timeout(time_lift1_travel1)
+                    if lift1_use == 0:
+                        flow_time = env.now - pickup_time
+                        cycle_time = env.now - arrive
+                        flowtime.append(flow_time)
+                        cycletime.append(cycle_time)
+                        print('%7.4f %s: Finished Shuttle:%s, Cycle time: %7.4f' % (env.now, name, shuttleID, cycle_time))
+                        proc_check[0] = 0
+                    elif lift1_use == 1:
+                        if lift1_buffer_control[tier - 1] == name:
+                            for no_lift1 in range(2):
+                                if lift1_avail[no_lift1] == name:
+                                    lift1_travel1 = abs(1 - tier) * heightoftier
+                                    time_lift1_travel1 = calctime(a_lift, v_lift, lift1_travel1)
+                                    tl1 = env.timeout(time_lift1_travel1)
 
-                                print('%7.4f %s: Lift1:%s moving to I/O' % (env.now, name, no_lift1+1))
-                                yield tl1
-                                print('%7.4f %s: Lift1:%s moved to I/O' % (env.now, name, no_lift1+1))
+                                    print('%7.4f %s: Lift1:%s moving to I/O' % (env.now, name, no_lift1+1))
+                                    yield tl1
+                                    print('%7.4f %s: Lift1:%s moved to I/O' % (env.now, name, no_lift1+1))
 
-                                lift1.put(no_lift1+1)
-                                lift1_locations[no_lift1+1] = 1
-                                lift1_avail[no_lift1] = 0
-                                flow_time = env.now - pickup_time
-                                cycle_time = env.now - arrive
-                                flowtime.append(flow_time)
-                                cycletime.append(cycle_time)
-                                lift1_util[no_lift1] = lift1_util[no_lift1] + flow_time
-                                print('%7.4f %s: Finished Lift1:%s, Cycle time: %7.4f' % (
-                                env.now, name, no_lift1+1, cycle_time))
-                                if proc_check[0] == 0:
-                                    env.process(shuttle_action1(env, shuttle))
-                                break
+                                    print('%7.4f %s: Lift1:%s released' % (env.now, name, no_lift1 + 1))
+                                    lift1.put(no_lift1+1)
+                                    lift1_locations[no_lift1+1] = 1
+                                    lift1_avail[no_lift1] = 0
+                                    flow_time = env.now - pickup_time
+                                    cycle_time = env.now - arrive
+                                    flowtime.append(flow_time)
+                                    cycletime.append(cycle_time)
+                                    lift1_util[no_lift1] = lift1_util[no_lift1] + flow_time
+                                    print('%7.4f %s: Finished Lift1:%s, Cycle time: %7.4f' % (
+                                    env.now, name, no_lift1+1, cycle_time))
+                                    proc_check[0] = 0
+                                    break
+                        else:
+                            tier_buffer.append(buffer_control)
+                            proc_check[0] = 0
             else:
                 proc_check[0] = 0
                 break
@@ -259,7 +282,7 @@ def shuttle_action1(env, shuttle, shuttleID=1):
 
 def shuttle_action2(env, shuttle, shuttleID=2):
     while True:
-        proc_check[1] = 1
+        proc_check[1] = proc_check[1] + 1
         if len(active_transactions) > 0 and shuttle_avail[shuttleID - 1] == 0:
             name = ""
             for transaction in range(len(active_transactions)):
@@ -274,22 +297,24 @@ def shuttle_action2(env, shuttle, shuttleID=2):
                     break
             # Process start
             if name != "":
-
-                req1 = yield shuttle.get(lambda shuttleno: shuttleno == shuttleID)
-                shuttle_avail[req1 - 1] = name
+                yield shuttle.get(lambda shuttleno: shuttleno == shuttleID)
+                buffer_control = [tier, name]
+                shuttle_avail[shuttleID - 1] = name
                 tier_avail[tier - 1] = shuttleID
                 pickup_time = env.now
                 wait = pickup_time - arrive
-                print('%7.4f %s: Waited %6.3f, Chosen Shuttle: %s' % (env.now, name, wait, req1))
+                print('%7.4f %s: Waited %6.3f, Chosen Shuttle: %s' % (env.now, name, wait, shuttleID))
 
                 if tier != 1:
                     lift1_move = lift1_action(env, name, type, shuttleID, lift1, tier, bay, arrive)
                     env.process(lift1_move)
+                    lift1_use = 1
                 elif tier == 1:
                     lift1_buffer_control[0] = name
+                    lift1_use = 0
                 if shuttle_locations[shuttleID]["tier"] != tier:
                     temp_tier = shuttle_locations[shuttleID]["tier"]
-                    s_travel1 = abs(shuttle_locations[req1]["bay"] - bays) * lengthofbay
+                    s_travel1 = abs(shuttle_locations[shuttleID]["bay"] - bays) * lengthofbay
                     t_st1 = calctime(a_shuttle, v_shuttle, s_travel1)
                     l2_travel1 = abs(lift2_location[0] - temp_tier) * heightoftier
                     t_l2t = calctime(a_lift, v_lift, l2_travel1)
@@ -297,13 +322,14 @@ def shuttle_action2(env, shuttle, shuttleID=2):
                     t_l2t2 = calctime(a_lift, v_lift, l2_travel2)
                     req_lift2 = lift2.request()
                     yield req_lift2
+                    lift2_time1 = env.now
                     to1 = env.timeout(t_st1)
                     to2 = env.timeout(t_l2t)
-                    print('%7.4f %s: Shuttle:%s moving to Lift 2 buffer' % (env.now, name, req1))
+                    print('%7.4f %s: Shuttle:%s moving to Lift 2 buffer' % (env.now, name, shuttleID))
                     print('%7.4f %s: Lift 2 moving to %s tier to pick up Shuttle %s' % (
-                    env.now, name, temp_tier, shuttleID))
+                        env.now, name, temp_tier, shuttleID))
                     yield to1 & to2
-                    print('%7.4f %s: Shuttle:%s moved to Lift 2 buffer' % (env.now, name, req1))
+                    print('%7.4f %s: Shuttle:%s moved to Lift 2 buffer' % (env.now, name, shuttleID))
                     to3 = env.timeout(t_l2t2)
                     tier_avail[temp_tier - 1] = 0
                     print('%7.4f %s: Lift 2 moving to tier %s' % (env.now, name, tier))
@@ -311,6 +337,7 @@ def shuttle_action2(env, shuttle, shuttleID=2):
                     print('%7.4f %s: Lift 2 moved to tier %s' % (env.now, name, tier))
                     shuttle_locations[shuttleID]["tier"] = tier
                     shuttle_locations[shuttleID]["bay"] = bays
+                    lift2_util[0] = lift2_util[0] + (env.now - lift2_time1)
                     lift2.release(req_lift2)
                 if type == 0:
 
@@ -319,29 +346,34 @@ def shuttle_action2(env, shuttle, shuttleID=2):
                     shuttle_travel2 = bay * lengthofbay
                     time_shuttle_travel2 = calctime(a_shuttle, v_shuttle, shuttle_travel2)
                     t1 = env.timeout(time_shuttle_travel1)
-                    print('%7.4f %s: Shuttle:%s moving to buffer' % (env.now, name, req1))
+                    print('%7.4f %s: Shuttle:%s moving to buffer' % (env.now, name, shuttleID))
                     yield t1
-                    print('%7.4f %s: Shuttle:%s moved to buffer' % (env.now, name, req1))
+                    print('%7.4f %s: Shuttle:%s moved to buffer' % (env.now, name, shuttleID))
                     shuttle_buffer_control[tier - 1] = name
                     if lift1_buffer_control[tier - 1] == name:
                         t2 = env.timeout(time_shuttle_travel2)
-                        print('%7.4f %s: Shuttle:%s moving to bay %s' % (env.now, name, req1, bay))
+                        print('%7.4f %s: Shuttle:%s moving to bay %s' % (env.now, name, shuttleID, bay))
                         yield t2
-                        print('%7.4f %s: Shuttle:%s moved to bay %s' % (env.now, name, req1, bay))
+                        print('%7.4f %s: Shuttle:%s moved to bay %s' % (env.now, name, shuttleID, bay))
 
-                        shuttle_avail[req1 - 1] = 0
-                        shuttle.put(req1)
+                        shuttle_avail[shuttleID - 1] = 0
+                        shuttle.put(shuttleID)
                         shuttle_time = env.now - pickup_time
-                        shuttle_util[req1 - 1] = shuttle_util[req1 - 1] + shuttle_time
+                        shuttle_util[shuttleID - 1] = shuttle_util[shuttleID - 1] + shuttle_time
                         shuttle_locations[shuttleID]["bay"] = bay
                         flow_time = env.now - pickup_time
                         cycle_time = env.now - arrive
                         flowtime.append(flow_time)
                         cycletime.append(cycle_time)
-                        env.process(shuttle_action2(env, shuttle, shuttleID))
-                        print('%7.4f %s: Finished Shuttle:%s, Cycle time: %7.4f' % (env.now, name, req1, cycle_time))
-                    else:
+                        print('%7.4f %s: Finished Shuttle:%s, Cycle time: %7.4f' % (
+                        env.now, name, shuttleID, cycle_time))
                         proc_check[1] = 0
+                        env.process(shuttle_action2(env, shuttle, shuttleID))
+                        break
+                    else:
+                        tier_buffer.append(buffer_control)
+                        proc_check[1] = 0
+                        break
                 else:
                     shuttle_travel1 = abs(shuttle_locations[shuttleID]["bay"] - bay) * lengthofbay
                     time_shuttle_travel1 = calctime(a_shuttle, v_shuttle, shuttle_travel1)
@@ -349,45 +381,55 @@ def shuttle_action2(env, shuttle, shuttleID=2):
                     time_shuttle_travel2 = calctime(a_shuttle, v_shuttle, shuttle_travel2)
                     ts1 = env.timeout(time_shuttle_travel1)
 
-                    print('%7.4f %s: Shuttle:%s moving to bay %s' % (env.now, name, req1, bay))
+                    print('%7.4f %s: Shuttle:%s moving to bay %s' % (env.now, name, shuttleID, bay))
                     yield ts1
-                    print('%7.4f %s: Shuttle:%s moved to bay %s' % (env.now, name, req1, bay))
+                    print('%7.4f %s: Shuttle:%s moved to bay %s' % (env.now, name, shuttleID, bay))
 
                     ts2 = env.timeout(time_shuttle_travel2)
-                    print('%7.4f %s: Shuttle:%s moving to buffer' % (env.now, name, req1))
+                    print('%7.4f %s: Shuttle:%s moving to buffer' % (env.now, name, shuttleID))
                     yield ts2
-                    print('%7.4f %s: Shuttle:%s moved to buffer' % (env.now, name, req1))
+                    print('%7.4f %s: Shuttle:%s moved to buffer' % (env.now, name, shuttleID))
 
                     shuttle_buffer_control[tier - 1] = name
-                    shuttle_avail[req1 - 1] = 0
-                    shuttle.put(req1)
+                    shuttle_avail[shuttleID - 1] = 0
+                    shuttle.put(shuttleID)
                     shuttle_time = env.now - pickup_time
-                    shuttle_util[req1 - 1] = shuttle_util[req1 - 1] + shuttle_time
+                    shuttle_util[shuttleID - 1] = shuttle_util[shuttleID - 1] + shuttle_time
                     shuttle_locations[shuttleID]["bay"] = 0
-                    if lift1_buffer_control[tier - 1] == name:
-                        for no_lift1 in range(2):
-                            if lift1_avail[no_lift1] == name:
-                                lift1_travel1 = abs(1 - tier) * heightoftier
-                                time_lift1_travel1 = calctime(a_lift, v_lift, lift1_travel1)
-                                tl1 = env.timeout(time_lift1_travel1)
+                    if lift1_use == 0:
+                        flow_time = env.now - pickup_time
+                        cycle_time = env.now - arrive
+                        flowtime.append(flow_time)
+                        cycletime.append(cycle_time)
+                        print('%7.4f %s: Finished Shuttle:%s, Cycle time: %7.4f' % (env.now, name, shuttleID, cycle_time))
+                        proc_check[0] = 0
+                    elif lift1_use == 1:
+                        if lift1_buffer_control[tier - 1] == name:
+                            for no_lift1 in range(2):
+                                if lift1_avail[no_lift1] == name:
+                                    lift1_travel1 = abs(1 - tier) * heightoftier
+                                    time_lift1_travel1 = calctime(a_lift, v_lift, lift1_travel1)
+                                    tl1 = env.timeout(time_lift1_travel1)
 
-                                print('%7.4f %s: Lift1:%s moving to I/O' % (env.now, name, no_lift1+1))
-                                yield tl1
-                                print('%7.4f %s: Lift1:%s moved to I/O' % (env.now, name, no_lift1+1))
-
-                                lift1.put(no_lift1+1)
-                                lift1_locations[no_lift1+1] = 1
-                                lift1_avail[no_lift1] = 0
-                                flow_time = env.now - pickup_time
-                                cycle_time = env.now - arrive
-                                flowtime.append(flow_time)
-                                cycletime.append(cycle_time)
-                                lift1_util[no_lift1] = lift1_util[no_lift1] + flow_time
-                                print('%7.4f %s: Finished Lift1:%s, Cycle time: %7.4f' % (
-                                env.now, name, no_lift1+1, cycle_time))
-                                if proc_check[1] == 0:
-                                    env.process(shuttle_action2(env, shuttle))
-                                break
+                                    print('%7.4f %s: Lift1:%s moving to I/O' % (env.now, name, no_lift1+1))
+                                    yield tl1
+                                    print('%7.4f %s: Lift1:%s moved to I/O' % (env.now, name, no_lift1+1))
+                                    print('%7.4f %s: Lift1:%s released' % (env.now, name, no_lift1 + 1))
+                                    lift1.put(no_lift1+1)
+                                    lift1_locations[no_lift1+1] = 1
+                                    lift1_avail[no_lift1] = 0
+                                    flow_time = env.now - pickup_time
+                                    cycle_time = env.now - arrive
+                                    flowtime.append(flow_time)
+                                    cycletime.append(cycle_time)
+                                    lift1_util[no_lift1] = lift1_util[no_lift1] + flow_time
+                                    print('%7.4f %s: Finished Lift1:%s, Cycle time: %7.4f' % (
+                                    env.now, name, no_lift1+1, cycle_time))
+                                    proc_check[1] = 0
+                                    break
+                        else:
+                            tier_buffer.append(buffer_control)
+                            proc_check[1] = 0
             else:
                 proc_check[1] = 0
                 break
@@ -415,37 +457,41 @@ def lift1_action(env, name, type, shuttleID, lift1, tier, bay, arrive):
         print('%7.4f %s: Lift1:%s moving to tier %s' % (env.now, name, req2, tier))
         yield t2
         print('%7.4f %s: Lift1:%s moved to tier %s' % (env.now, name, req2, tier))
-
+        print('%7.4f %s: Lift1:%s released' % (env.now, name, req2))
         lift1_buffer_control[tier - 1] = name
         lift1.put(req2)
         lift1_locations[req2] = tier
         lift1_time = env.now - pickup_time
         lift1_util[req2 - 1] = lift1_util[req2 - 1] + lift1_time
+        for i in range(len(tier_buffer)):
+            tier_check = tier_buffer[i][0]
+            name_check = tier_buffer[i][1]
+            if tier_check == tier and name_check == name:
+                del tier_buffer[i]
+                shuttle_travel2 = bay * lengthofbay
+                time_shuttle_travel2 = calctime(a_shuttle, v_shuttle, shuttle_travel2)
+                ts2 = env.timeout(time_shuttle_travel2)
+                print('%7.4f %s: Shuttle:%s moving to bay %s' % (env.now, name, shuttleID, bay))
+                yield ts2
+                print('%7.4f %s: Shuttle:%s moved to bay %s' % (env.now, name, shuttleID, bay))
 
-        if shuttle_buffer_control[tier - 1] == name:
-            shuttle_travel2 = bay * lengthofbay
-            time_shuttle_travel2 = calctime(a_shuttle, v_shuttle, shuttle_travel2)
-            ts2 = env.timeout(time_shuttle_travel2)
-            print('%7.4f %s: Shuttle:%s moving to bay %s' % (env.now, name, shuttleID, bay))
-            yield ts2
-            print('%7.4f %s: Shuttle:%s moved to bay %s' % (env.now, name, shuttleID, bay))
-
-            shuttle_avail[shuttleID - 1] = 0
-            shuttle.put(shuttleID)
-            shuttle_time = env.now - pickup_time
-            shuttle_util[shuttleID - 1] = shuttle_util[shuttleID - 1] + shuttle_time
-            shuttle_locations[shuttleID]["bay"] = bay
-            flow_time = env.now - pickup_time
-            cycle_time = env.now - arrive
-            flowtime.append(flow_time)
-            cycletime.append(cycle_time)
-            print('%7.4f %s: Finished Shuttle:%s, Cycle time: %7.4f' % (env.now, name, shuttleID, cycle_time))
-            if shuttleID == 1:
-                if proc_check[0] == 0:
-                    env.process(shuttle_action1(env, shuttle))
-            elif shuttleID == 2:
-                if proc_check[1] == 0:
-                    env.process(shuttle_action2(env, shuttle))
+                shuttle_avail[shuttleID - 1] = 0
+                shuttle.put(shuttleID)
+                shuttle_time = env.now - pickup_time
+                shuttle_util[shuttleID - 1] = shuttle_util[shuttleID - 1] + shuttle_time
+                shuttle_locations[shuttleID]["bay"] = bay
+                flow_time = env.now - pickup_time
+                cycle_time = env.now - arrive
+                flowtime.append(flow_time)
+                cycletime.append(cycle_time)
+                print('%7.4f %s: Finished Shuttle:%s, Cycle time: %7.4f' % (env.now, name, shuttleID, cycle_time))
+                if shuttleID == 1:
+                    if proc_check[0] == 0:
+                        env.process(shuttle_action1(env, shuttle))
+                elif shuttleID == 2:
+                    if proc_check[1] == 0:
+                        env.process(shuttle_action2(env, shuttle))
+                break
 
     else:
 
@@ -460,20 +506,25 @@ def lift1_action(env, name, type, shuttleID, lift1, tier, bay, arrive):
 
         lift1_buffer_control[tier - 1] = name
 
-        if shuttle_buffer_control[tier - 1] == name:
-            t2 = env.timeout(time_lift1_travel2)
-            print('%7.4f %s: Lift1:%s moving to I/O' % (env.now, name, req2))
-            yield t2
-            print('%7.4f %s: Lift1:%s moved to I/O' % (env.now, name, req2))
-
-            lift1.put(req2)
-            lift1_locations[req2] = 1
-            flow_time = env.now - pickup_time
-            cycle_time = 0
-            flowtime.append(flow_time)
-            cycletime.append(cycle_time)
-            lift1_util[req2 - 1] = lift1_util[req2 - 1] + flow_time
-            print('%7.4f %s: Finished Lift1:%s, Cycle time: %7.4f' % (env.now, name, req2, cycle_time))
+        for i in range(len(tier_buffer)):
+            tier_check = tier_buffer[i][0]
+            name_check = tier_buffer[i][1]
+            if tier_check == tier and name_check == name:
+                del tier_buffer[i]
+                t2 = env.timeout(time_lift1_travel2)
+                print('%7.4f %s: Lift1:%s moving to I/O' % (env.now, name, req2))
+                yield t2
+                print('%7.4f %s: Lift1:%s moved to I/O' % (env.now, name, req2))
+                print('%7.4f %s: Lift1:%s released' % (env.now, name, req2))
+                lift1.put(req2)
+                lift1_locations[req2] = 1
+                flow_time = env.now - pickup_time
+                cycle_time = 0
+                flowtime.append(flow_time)
+                cycletime.append(cycle_time)
+                lift1_util[req2 - 1] = lift1_util[req2 - 1] + flow_time
+                print('%7.4f %s: Finished Lift1:%s, Cycle time: %7.4f' % (env.now, name, req2, cycle_time))
+                break
 
 """
 def lift2_action(env, name, picked_shuttle, s_tier, d_tier):
@@ -502,13 +553,15 @@ env.process(source(env, transaction_interval))
 #env.process(shuttle_action1(env, shuttle))
 #env.process(shuttle_action2(env, shuttle))
 env.run(until=run_time)
-"""
+
+
 shuttle_utilizations = [x / run_time for x in shuttle_util]
 lift1_utilizations = [x / run_time for x in lift1_util]
+lift2_utilization = [x / run_time for x in lift2_util]
 print("Average cycle time is: %6.3f seconds." % mean(cycletime))
 print("Average flow time is: %6.3f seconds." % mean(flowtime))
 for a in range(len(shuttle_utilizations)):
     print("Shuttle %s utilization is %4.2f" % (a + 1, shuttle_utilizations[a]))
 for a in range(len(lift1_utilizations)):
     print("Lift1 %s utilization is %4.2f" % (a + 1, lift1_utilizations[a]))
-"""
+print("Lift2 utilization is %4.2f" % (lift2_utilization[0]))
