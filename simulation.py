@@ -3,7 +3,7 @@ import simpy
 from math import sqrt
 from statistics import mean
 
-run_time = 10000
+run_time = 1000000
 transaction_interval = 7.6  # every 7.6 seconds create transaction
 tiers = 5
 bays = 25
@@ -140,7 +140,6 @@ def shuttle_action1(env, shuttle, shuttleID=1):
             if name != "":
                 yield shuttle.get(lambda shuttleno: shuttleno == shuttleID)
                 buffer_control = [tier, name]
-
                 shuttle_avail[shuttleID - 1] = name
                 tier_avail[tier - 1] = shuttleID
                 pickup_time = env.now
@@ -285,6 +284,7 @@ def shuttle_action2(env, shuttle, shuttleID=2):
         proc_check[1] = proc_check[1] + 1
         if len(active_transactions) > 0 and shuttle_avail[shuttleID - 1] == 0:
             name = ""
+            env.timeout(0.0001)
             for transaction in range(len(active_transactions)):
                 transaction_tier = active_transactions[transaction][2] - 1
                 if tier_avail[transaction_tier] == 0 or tier_avail[transaction_tier] == shuttleID:
@@ -402,7 +402,7 @@ def shuttle_action2(env, shuttle, shuttleID=2):
                         flowtime.append(flow_time)
                         cycletime.append(cycle_time)
                         print('%7.4f %s: Finished Shuttle:%s, Cycle time: %7.4f' % (env.now, name, shuttleID, cycle_time))
-                        proc_check[0] = 0
+                        proc_check[1] = 0
                     elif lift1_use == 1:
                         if lift1_buffer_control[tier - 1] == name:
                             for no_lift1 in range(2):
